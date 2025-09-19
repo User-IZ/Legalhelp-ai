@@ -29,11 +29,10 @@ const AuthForm = () => {
   const { session, loading, login, register } = useAuth();
 
   useEffect(() => {
-    // Simple redirect logic - if we have a session, check VKYC and redirect
+    // Redirect logic after session is updated
     if (!loading && session?.user) {
       console.log('Session detected, checking VKYC status...');
 
-      // Direct redirect to VKYC if not completed, otherwise to dashboard
       if (session.user.vkyc_completed) {
         console.log('VKYC completed, redirecting to dashboard');
         router.push('/');
@@ -81,9 +80,7 @@ const AuthForm = () => {
           title: "Welcome back!",
           description: "Signed in successfully!",
         });
-
-        // Don't manually redirect here - let useEffect handle it
-        // after session is updated
+        // ✅ no manual redirect — handled in useEffect
       }
     } catch (error) {
       console.error("Unexpected sign-in error:", error);
@@ -119,7 +116,7 @@ const AuthForm = () => {
           description: "Redirecting to verification...",
         });
 
-        // Force a page reload to ensure the session is properly set
+        // Force reload to ensure session is set
         setTimeout(() => {
           window.location.href = '/vkyc';
         }, 1000);
@@ -141,8 +138,6 @@ const AuthForm = () => {
       setIsLoading(false);
     }
   };
-
-  // Show loading while checking authentication or redirecting
   if (loading || redirecting) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-sky-50">
