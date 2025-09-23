@@ -32,6 +32,11 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  experimental: {
+    turbo: {
+      rules: {}, // ✅ disables Turbopack
+    },
+  },
 };
 
 export default nextConfig;

@@ -46,7 +46,7 @@ const Footer = () => {
               <div className="bg-gradient-to-r from-sky-400 to-sky-500 p-2 rounded-lg">
                 <Scale className="w-6 h-6 text-white" />
               </div>
-              <span className="text-xl font-bold">Justiceia.ai</span>
+              <span className="text-xl font-bold">LegalHelp</span>
             </div>
             <p className="text-slate-400 mb-6 max-w-md">
               Empowering legal access with AI in India. Your intelligent companion for case research,

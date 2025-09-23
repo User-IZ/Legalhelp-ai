@@ -11,7 +11,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Justiceia.ai",
+  title: "LegalHelp",
   description: "Access AI-powered legal assistance and consultation services",
 };
 

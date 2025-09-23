@@ -1,176 +1,270 @@
-import { NextRequest, NextResponse } from 'next/server';
+// app/api/documents/analyze/route.ts
+/*import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { extractPDFText, extractPDFTextAdvanced } from '@/lib/pdfExtractor';
+import { extractPDFText, extractPDFTextAdvanced, extractPDFWithOCR } from '@/lib/pdfExtractor';
+
+export const runtime = 'nodejs';
+
+type RequestBody = {
+  fileContent?: string;
+  fileName?: string;
+  apiKey?: string;
+};
 
 export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as RequestBody;
+    const { fileContent, fileName = 'uploaded.pdf', apiKey } = body;
+
+    if (!fileContent || !apiKey) {
+      return NextResponse.json({ error: 'File content and API key are required' }, { status: 400 });
+    }
+
+    // Handle "data:application/pdf;base64,..." or raw base64
+    const base64 = fileContent.includes(',') ? fileContent.split(',')[1] : fileContent;
+
+    let buffer: Buffer;
     try {
-        const { fileContent, fileName, apiKey } = await req.json();
+      buffer = Buffer.from(base64, 'base64');
+    } catch (err) {
+      return NextResponse.json({ error: 'Invalid base64 file content' }, { status: 400 });
+    }
 
-        if (!fileContent || !apiKey) {
-            return NextResponse.json(
-                { error: 'File content and API key are required' },
-                { status: 400 }
-            );
-        }
+    const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 
-        // Extract text from PDF
-        let documentText = '';
-        try {
-            console.log('Processing PDF file:', fileName);
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+      return NextResponse.json({ error: 'Empty PDF file received' }, { status: 400 });
+    }
 
-            // Convert base64 to ArrayBuffer
-            const binaryString = atob(fileContent);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-            const arrayBuffer = bytes.buffer;
+    const maxBytes = 20 * 1024 * 1024;
+    if (arrayBuffer.byteLength > maxBytes) {
+      return NextResponse.json({ error: 'File too large. Maximum allowed is 20MB.' }, { status: 400 });
+    }
 
-            if (arrayBuffer.byteLength === 0) {
-                throw new Error('Empty PDF file received');
-            }
+    // Check header
+    const headerBytes = new Uint8Array(arrayBuffer.slice(0, 5));
+    const pdfHeader = String.fromCharCode(...headerBytes);
+    if (!pdfHeader.startsWith('%PDF')) {
+      return NextResponse.json({ error: 'File is not a valid PDF document' }, { status: 400 });
+    }
 
-            console.log('PDF size:', arrayBuffer.byteLength, 'bytes');
+    console.log('Processing PDF file:', fileName);
 
-            // Check PDF header
-            const header = new Uint8Array(arrayBuffer.slice(0, 5));
-            const pdfHeader = String.fromCharCode(...header);
-            if (!pdfHeader.startsWith('%PDF')) {
-                throw new Error('File is not a valid PDF document');
-            }
+    let documentText = '';
 
-            // Try simple extraction first
-            console.log('Attempting simple PDF extraction...');
-            documentText = await extractPDFText(arrayBuffer);
+    // Step 1: simple
+    documentText = await extractPDFText(arrayBuffer as ArrayBuffer);
 
-            // If simple extraction didn't work well, try advanced method
-            if (!documentText || documentText.length < 50 || documentText.includes('No readable text found')) {
-                console.log('Simple extraction failed, trying advanced method...');
-                try {
-                    documentText = await extractPDFTextAdvanced(arrayBuffer);
-                } catch (advancedError) {
-                    console.warn('Advanced extraction also failed:', advancedError);
-                    // Keep the simple extraction result
-                }
-            }
+    // Step 2: advanced
+    if (!documentText || documentText.length < 50 || documentText.includes('No readable text found')) {
+      console.log('Simple extraction failed, trying advanced...');
+      try {
+        documentText = await extractPDFTextAdvanced(arrayBuffer as ArrayBuffer);
+      } catch (e) {
+        console.warn('Advanced extraction failed:', e);
+      }
+    }
 
-            console.log('Final extracted text length:', documentText.length);
-            console.log('Text preview:', documentText.substring(0, 200) + '...');
+    // Step 3: OCR
+    if (!documentText || documentText.length < 50) {
+      console.log('Advanced extraction also failed, trying OCR...');
+      try {
+        documentText = await extractPDFWithOCR(
+            buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer
+        );
 
-            if (!documentText || documentText.trim().length < 10) {
-                throw new Error('No readable text found in the PDF. This might be a scanned document or image-based PDF that requires OCR.');
-            }
+      } catch (e) {
+        console.warn('OCR extraction failed:', e);
+      }
+    }
 
-        } catch (extractError: any) {
-            console.error('PDF extraction error:', extractError);
-            return NextResponse.json(
-                { error: `Failed to process PDF: ${extractError.message}` },
-                { status: 400 }
-            );
-        }
+    if (!documentText || documentText.trim().length < 10) {
+      return NextResponse.json({
+        error:
+          'No readable text found in the PDF. The file may be a scanned/image PDF that requires OCR. Please provide a text-based PDF or ensure OCR is enabled.',
+      }, { status: 400 });
+    }
 
-        // Analyze with AI
-        try {
-            const genAI = new GoogleGenerativeAI(apiKey);
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    // Truncate if too long
+    const maxChars = 120_000;
+    if (documentText.length > maxChars) {
+      console.warn(`Truncating document text from ${documentText.length} to ${maxChars} chars`);
+      documentText = documentText.slice(0, maxChars);
+    }
 
-            const analysisPrompt = `You are a professional legal document analyzer. Please analyze the following document and provide a comprehensive legal analysis.
+    const analysisPrompt = `You are a professional legal document analyzer. Please analyze the following document and provide a comprehensive legal analysis.
 
 DOCUMENT CONTENT:
 ${documentText}
 
-Please provide your analysis in the following JSON format:
-
+Please provide your analysis in JSON format:
 {
-    "documentType": "type of legal document (e.g., Contract, Agreement, Notice, etc.)",
-    "summary": "brief summary of the document's purpose and main content",
-    "keyPoints": [
-        "list of key points, terms, and important clauses mentioned in the document",
-        "include specific dates, amounts, obligations, rights mentioned",
-        "highlight important legal provisions and conditions"
-    ],
-    "legalConcerns": [
-        "potential legal issues or risks identified in the document",
-        "ambiguous terms that need clarification",
-        "missing clauses or provisions that should be included",
-        "compliance concerns with applicable laws"
-    ],
-    "recommendations": [
-        "specific recommendations to improve the document",
-        "suggestions for legal compliance",
-        "recommendations for risk mitigation",
-        "advice for parties involved"
-    ]
-}
+  "documentType": "...",
+  "summary": "...",
+  "keyPoints": ["..."],
+  "legalConcerns": ["..."],
+  "recommendations": ["..."]
+}`;
 
-ANALYSIS REQUIREMENTS:
-- Focus on the actual content of the document provided
-- Identify specific terms, conditions, and obligations mentioned
-- Highlight any dates, monetary amounts, or deadlines
-- Point out potential legal risks based on the document content
-- Provide actionable recommendations
-- Be specific and avoid generic responses
-- Base analysis entirely on the document content provided
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
-Ensure your analysis is thorough, professional, and directly related to the document content.`;
+    const result = await model.generateContent(analysisPrompt);
+    const aiText = result?.response?.text?.();
 
-            const result = await model.generateContent(analysisPrompt);
-            const response = result.response;
-            const text = response.text();
-
-            try {
-                const cleanedText = text.replace(/```json\n?|\n?```/g, '').trim();
-                const analysis = JSON.parse(cleanedText);
-
-                return NextResponse.json({
-                    analysis: {
-                        documentType: analysis.documentType || 'Legal Document',
-                        summary: analysis.summary || 'Document analysis completed.',
-                        keyPoints: Array.isArray(analysis.keyPoints) ? analysis.keyPoints : [],
-                        legalConcerns: Array.isArray(analysis.legalConcerns) ? analysis.legalConcerns : [],
-                        recommendations: Array.isArray(analysis.recommendations) ? analysis.recommendations : []
-                    }
-                });
-
-            } catch (parseError) {
-                console.error('JSON parsing error:', parseError);
-
-                // Fallback analysis
-                return NextResponse.json({
-                    analysis: {
-                        documentType: 'Legal Document',
-                        summary: 'Document content was extracted successfully but requires manual analysis.',
-                        keyPoints: [
-                            'Document uploaded and processed',
-                            'Text content extracted from PDF',
-                            'Manual review recommended for detailed insights'
-                        ],
-                        legalConcerns: [
-                            'Automated analysis could not be completed',
-                            'Professional legal review recommended'
-                        ],
-                        recommendations: [
-                            'Have document reviewed by qualified legal counsel',
-                            'Verify all terms and conditions manually',
-                            'Ensure compliance with applicable laws'
-                        ]
-                    }
-                });
-            }
-
-        } catch (aiError: any) {
-            console.error('AI analysis error:', aiError);
-            return NextResponse.json(
-                { error: 'Failed to analyze document with AI. Please check your API key and try again.' },
-                { status: 500 }
-            );
-        }
-
-    } catch (error: any) {
-        console.error('Document analysis error:', error);
-        return NextResponse.json(
-            { error: 'Failed to analyze document. Please try again.' },
-            { status: 500 }
-        );
+    if (!aiText) {
+      return NextResponse.json({ error: 'AI returned empty response' }, { status: 500 });
     }
+
+    try {
+      const cleaned = aiText.replace(/```json\s*|```/g, '').trim();
+      const analysis = JSON.parse(cleaned);
+      return NextResponse.json({
+        analysis: {
+          documentType: analysis.documentType || 'Legal Document',
+          summary: analysis.summary || 'Analysis complete.',
+          keyPoints: Array.isArray(analysis.keyPoints) ? analysis.keyPoints : [],
+          legalConcerns: Array.isArray(analysis.legalConcerns) ? analysis.legalConcerns : [],
+          recommendations: Array.isArray(analysis.recommendations) ? analysis.recommendations : [],
+        },
+      });
+    } catch (err) {
+      console.error('AI JSON parse error:', err);
+      return NextResponse.json({
+        analysis: {
+          documentType: 'Legal Document',
+          summary: 'AI output could not be parsed as JSON.',
+          keyPoints: ['Document processed'],
+          legalConcerns: ['Manual review recommended'],
+          recommendations: ['Check raw AI output'],
+          rawAIResponsePreview: aiText.slice(0, 250),
+        },
+      });
+    }
+  } catch (error: any) {
+    console.error('Document analysis error:', error);
+    return NextResponse.json({ error: error.message || 'Failed to analyze document' }, { status: 500 });
+  }
+}
+*/
+
+
+// app/api/documents/analyze/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+export const runtime = "nodejs";
+
+type RequestBody = {
+  fileContent?: string; // base64 encoded PDF
+  fileName?: string;
+  apiKey?: string;
+};
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as RequestBody;
+    const { fileContent, fileName = "uploaded.pdf", apiKey } = body;
+
+    if (!fileContent || !apiKey) {
+      return NextResponse.json(
+        { error: "File content and API key are required" },
+        { status: 400 }
+      );
+    }
+
+    // Handle "data:application/pdf;base64,..." or raw base64
+    const base64 = fileContent.includes(",")
+      ? fileContent.split(",")[1]
+      : fileContent;
+
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(base64, "base64");
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid base64 file content" },
+        { status: 400 }
+      );
+    }
+
+    if (buffer.length === 0) {
+      return NextResponse.json(
+        { error: "Empty PDF file received" },
+        { status: 400 }
+      );
+    }
+
+    const maxBytes = 20 * 1024 * 1024; // 20 MB
+    if (buffer.length > maxBytes) {
+      return NextResponse.json(
+        { error: "File too large. Maximum allowed is 20MB." },
+        { status: 400 }
+      );
+    }
+
+    // 🔹 Initialize Gemini
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    // 🔹 Ask Gemini to analyze the PDF directly
+    const prompt = `You are a professional legal document analyzer. 
+Please analyze this PDF and provide a structured JSON response with:
+{
+  "documentType": "...",
+  "summary": "...",
+  "keyPoints": ["..."],
+  "legalConcerns": ["..."],
+  "recommendations": ["..."]
+}`;
+
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: "application/pdf",
+          data: buffer.toString("base64"),
+        },
+      },
+      { text: prompt },
+    ]);
+
+    const aiText = result.response.text();
+
+    // 🔹 Try parsing Gemini’s output as JSON
+    try {
+      const cleaned = aiText.replace(/```json\s*|```/g, "").trim();
+      const analysis = JSON.parse(cleaned);
+      return NextResponse.json({
+        analysis: {
+          documentType: analysis.documentType || "Legal Document",
+          summary: analysis.summary || "Analysis complete.",
+          keyPoints: Array.isArray(analysis.keyPoints) ? analysis.keyPoints : [],
+          legalConcerns: Array.isArray(analysis.legalConcerns)
+            ? analysis.legalConcerns
+            : [],
+          recommendations: Array.isArray(analysis.recommendations)
+            ? analysis.recommendations
+            : [],
+        },
+      });
+    } catch (err) {
+      console.warn("AI JSON parse error:", err);
+      return NextResponse.json({
+        analysis: {
+          documentType: "Legal Document",
+          summary: "AI output could not be parsed as JSON.",
+          keyPoints: ["Document processed"],
+          legalConcerns: ["Manual review recommended"],
+          recommendations: ["Check raw AI output"],
+          rawAIResponsePreview: aiText.slice(0, 250),
+        },
+      });
+    }
+  } catch (error: any) {
+    console.error("Document analysis error:", error);
+    return NextResponse.json(
+      { error: error.message || "Failed to analyze document" },
+      { status: 500 }
+    );
+  }
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { extractPDFText, extractPDFTextAdvanced } from '@/lib/pdfExtractor';
+import { extractPDFText, extractPDFTextAdvanced, extractPDFWithOCR } from '@/lib/pdfExtractor'; // ⚡ added extractPDFWithOCR
 
 export async function POST(req: NextRequest) {
     try {
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
             for (let i = 0; i < binaryString.length; i++) {
                 bytes[i] = binaryString.charCodeAt(i);
             }
-            const arrayBuffer = bytes.buffer;
+            const arrayBuffer: ArrayBuffer = bytes.buffer;
 
             if (arrayBuffer.byteLength === 0) {
                 throw new Error('Empty PDF file received');
@@ -50,7 +50,16 @@ export async function POST(req: NextRequest) {
                     documentText = await extractPDFTextAdvanced(arrayBuffer);
                 } catch (advancedError) {
                     console.warn('Advanced extraction also failed:', advancedError);
-                    // Keep the simple extraction result
+                }
+            }
+
+            // ⚡ OCR fallback
+            if (!documentText || documentText.trim().length < 10) {
+                console.log('Both simple and advanced extraction failed. Running OCR...');
+                try {
+                    documentText = await extractPDFWithOCR(arrayBuffer);
+                } catch (ocrError) {
+                    console.warn('OCR extraction failed:', ocrError);
                 }
             }
 
@@ -107,16 +116,7 @@ Please provide your response in the following JSON format:
 {
     "originalLanguage": "detected language of the source document",
     "translatedContent": "complete translated document content preserving formatting and structure"
-}
-
-IMPORTANT GUIDELINES:
-- Preserve all section headers, numbering, and bullet points
-- Translate legal terms accurately while maintaining their legal meaning
-- Keep proper names, company names, and technical terms in their original form where appropriate
-- Maintain professional legal document formatting
-- If certain legal terms don't have direct translations, include the original term in parentheses
-
-Ensure the translation is accurate, professional, and legally sound for ${targetLangName} speakers.`;
+}`;
 
             const result = await model.generateContent(translationPrompt);
             const response = result.response;
